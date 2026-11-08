@@ -90,7 +90,7 @@ A crashed container is restarted by Docker and recovers from its volume.
 make race
 ```
 
-The full suite takes about 5 minutes with the race detector. Highlights:
+The full suite takes about 2–3 minutes with the race detector (the Raft and KV packages run for about 2 minutes each, in parallel). Highlights:
 
 - `internal/raft`: elections, re-elections, partitions, agreement with
   failed followers and leaders, log backtracking over 50 conflicting
