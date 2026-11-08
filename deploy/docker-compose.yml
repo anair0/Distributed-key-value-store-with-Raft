@@ -1,0 +1,61 @@
+# 3-node cluster + dashboard + Prometheus + Grafana.
+#
+#   docker compose -f deploy/docker-compose.yml up --build
+#
+#   dashboard   http://localhost:8080   (isolate / crash nodes, read and write keys)
+#   grafana     http://localhost:3000   (dashboard "Raft KV")
+#   prometheus  http://localhost:9090
+#   node HTTP   http://localhost:8001..8003  (/status, /metrics, /kv/<key>)
+#
+# "Crash" makes a node exit; Docker restarts it and it recovers from its volume.
+
+x-node: &node
+  build:
+    context: ..
+  image: raft-kv
+  restart: on-failure
+
+services:
+  node1:
+    <<: *node
+    command: kvserver -id 1 -cluster 1=node1:7000,2=node2:7000,3=node3:7000 -listen 0.0.0.0:7000 -http 0.0.0.0:8000 -data /data
+    volumes: [node1:/data]
+    ports: ["8001:8000"]
+  node2:
+    <<: *node
+    command: kvserver -id 2 -cluster 1=node1:7000,2=node2:7000,3=node3:7000 -listen 0.0.0.0:7000 -http 0.0.0.0:8000 -data /data
+    volumes: [node2:/data]
+    ports: ["8002:8000"]
+  node3:
+    <<: *node
+    command: kvserver -id 3 -cluster 1=node1:7000,2=node2:7000,3=node3:7000 -listen 0.0.0.0:7000 -http 0.0.0.0:8000 -data /data
+    volumes: [node3:/data]
+    ports: ["8003:8000"]
+
+  dashboard:
+    image: raft-kv
+    command: kvdash -listen 0.0.0.0:8080 -nodes 1=http://node1:8000,2=http://node2:8000,3=http://node3:8000
+    ports: ["8080:8080"]
+    depends_on: [node1, node2, node3]
+
+  prometheus:
+    image: prom/prometheus:v2.53.2
+    volumes: [./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro]
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+
+volumes:
+  node1:
+  node2:
+  node3:
