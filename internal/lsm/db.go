@@ -349,7 +349,13 @@ func (db *DB) flush(imm *skiplist) {
 }
 
 func (db *DB) maybeCompactLocked() {
-	if db.compacting || db.closed || len(db.tables) < db.opts.CompactionTrigger {
+	if len(db.tables) >= max(2, db.opts.CompactionTrigger) {
+		db.startCompactionLocked()
+	}
+}
+
+func (db *DB) startCompactionLocked() {
+	if db.compacting || db.closed || len(db.tables) == 0 {
 		return
 	}
 	inputs := slices.Clone(db.tables)
@@ -529,6 +535,20 @@ func (db *DB) Flush() error {
 	if err := db.rotateLocked(); err != nil {
 		return err
 	}
+	db.waitIdleLocked()
+	return db.bgErr
+}
+
+// CompactAll flushes the memtable and merges every table into one,
+// dropping all overwritten values and tombstones.
+func (db *DB) CompactAll() error {
+	if err := db.Flush(); err != nil {
+		return err
+	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	db.waitIdleLocked()
+	db.startCompactionLocked()
 	db.waitIdleLocked()
 	return db.bgErr
 }
