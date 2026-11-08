@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raft KV Dashboard</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #667085; --border: #e3e6ea;
+  --leader: #1f7a4d; --leader-bg: #e3f4ea; --cand: #9a5b00; --cand-bg: #fdf0d9;
+  --down: #b42318; --down-bg: #fde8e7; --iso: #5b3fb5; --iso-bg: #ece7fb; --accent: #2563eb;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12151b; --card: #1b2029; --text: #e6e9ee; --muted: #98a2b3; --border: #2b3240;
+    --leader: #5fd39a; --leader-bg: #173326; --cand: #f2b84b; --cand-bg: #3a2c12;
+    --down: #f97066; --down-bg: #3b1a18; --iso: #b5a3f5; --iso-bg: #2a2244; --accent: #6ea0ff;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; background: var(--bg); color: var(--text); }
+main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+.sub { color: var(--muted); margin: 0 0 20px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+.card.leader { border-color: var(--leader); box-shadow: 0 0 0 1px var(--leader) inset; }
+.head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.name { font-weight: 600; }
+.badge { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--border); color: var(--muted); }
+.badge.Leader { background: var(--leader-bg); color: var(--leader); }
+.badge.Candidate { background: var(--cand-bg); color: var(--cand); }
+.badge.down { background: var(--down-bg); color: var(--down); }
+.badge.iso { background: var(--iso-bg); color: var(--iso); margin-left: 4px; }
+dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0 0 12px; font-size: 13px; }
+dt { color: var(--muted); } dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; }
+button { font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.danger { color: var(--down); }
+section { margin-top: 24px; }
+h2 { font-size: 16px; margin: 0 0 10px; }
+.kv { display: flex; gap: 8px; flex-wrap: wrap; }
+input { font: inherit; padding: 6px 9px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text); min-width: 0; flex: 1 1 140px; }
+pre { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px; max-height: 260px; overflow: auto; font-size: 12.5px; margin: 10px 0 0; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Raft KV cluster</h1>
+  <p class="sub" id="summary">Connecting…</p>
+  <div class="grid" id="nodes"></div>
+
+  <section>
+    <h2>Read and write</h2>
+    <div class="kv">
+      <input id="key" placeholder="key" value="x">
+      <input id="val" placeholder="value" value="5">
+      <button onclick="kv('PUT')">Put</button>
+      <button onclick="kv('GET')">Get</button>
+      <button onclick="kv('DELETE')">Delete</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Events</h2>
+    <pre id="log"></pre>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let lastLeader = null, lastTerm = 0;
+
+function log(msg) {
+  const t = new Date().toLocaleTimeString();
+  $('log').textContent = `${t}  ${msg}\n` + $('log').textContent;
+}
+
+async function act(id, action) {
+  log(`node ${id}: ${action}`);
+  await fetch(`/api/nodes/${id}/${action}`, { method: 'POST' });
+  refresh();
+}
+
+async function kv(method) {
+  const key = encodeURIComponent($('key').value);
+  const opts = { method };
+  if (method === 'PUT') opts.body = $('val').value;
+  const t0 = performance.now();
+  try {
+    const r = await fetch(`/api/kv/${key}`, opts);
+    const body = await r.text();
+    const ms = Math.round(performance.now() - t0);
+    const via = r.headers.get('X-Served-By');
+    let out = r.status === 404 ? '(not found)' : r.ok ? (method === 'GET' ? JSON.stringify(body) : 'OK') : `error: ${body.trim()}`;
+    log(`${method} ${$('key').value} → ${out}  (${ms} ms${via ? ', via node ' + via : ''})`);
+  } catch (e) { log(`${method} failed: ${e}`); }
+}
+
+function card(n) {
+  const el = document.createElement('div');
+  const s = n.status;
+  el.className = 'card' + (s && s.RoleName === 'Leader' ? ' leader' : '');
+  const badge = !n.up ? '<span class="badge down">down</span>'
+    : `<span class="badge ${s.RoleName}">${s.RoleName}</span>` + (s.Isolated ? '<span class="badge iso">isolated</span>' : '');
+  const rows = s ? [
+    ['term', s.Term], ['leader', s.LeaderID < 0 ? '—' : s.LeaderID], ['commit index', s.CommitIndex],
+    ['applied', s.LastApplied], ['last log index', s.LastLogIndex], ['snapshot index', s.SnapshotIndex],
+    ['members', (s.Members || []).map(m => m.ID).join(', ')], ['storage', s.Storage],
+  ] : [['url', n.url]];
+  el.innerHTML = `<div class="head"><span class="name">Node ${n.id}</span><span>${badge}</span></div>
+    <dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+    <div class="btns">${n.up ? (s.Isolated
+      ? `<button onclick="act(${n.id},'reconnect')">Reconnect</button>`
+      : `<button onclick="act(${n.id},'isolate')">Isolate</button>`) + `<button class="danger" onclick="act(${n.id},'crash')">Crash</button>` : ''}</div>`;
+  return el;
+}
+
+async function refresh() {
+  let nodes;
+  try { nodes = await (await fetch('/api/status')).json(); } catch { $('summary').textContent = 'Dashboard unreachable'; return; }
+  const grid = $('nodes');
+  grid.replaceChildren(...nodes.map(card));
+  const up = nodes.filter(n => n.up);
+  const leaders = up.filter(n => n.status.RoleName === 'Leader' && !n.status.Isolated);
+  const term = Math.max(0, ...up.map(n => n.status.Term));
+  const leader = leaders.sort((a, b) => b.status.Term - a.status.Term)[0];
+  $('summary').textContent = `${up.length} of ${nodes.length} nodes up · term ${term} · ` +
+    (leader ? `leader is node ${leader.id}` : 'no leader (election in progress or no quorum)');
+  const lid = leader ? leader.id : null;
+  if (lid !== lastLeader || term !== lastTerm) {
+    if (lid !== lastLeader) log(lid ? `node ${lid} is leader (term ${term})` : `no leader (term ${term})`);
+    lastLeader = lid; lastTerm = term;
+  }
+}
+refresh();
+setInterval(refresh, 700);
+</script>
+</body>
+</html>
