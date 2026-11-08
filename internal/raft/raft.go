@@ -115,10 +115,15 @@ func (r *Raft) Run() {
 // Kill stops the node. It is safe to call more than once. After Kill the node
 // ignores RPCs and stops delivering on applyCh.
 func (r *Raft) Kill() {
-	if r.killed.Swap(true) {
+	// Set killed while holding the lock: a handler that is mid-way through
+	// (e.g. granting a vote) finishes with killed=false and persists
+	// normally; everything after sees killed=true and does nothing.
+	r.mu.Lock()
+	if r.killed.Load() {
+		r.mu.Unlock()
 		return
 	}
-	r.mu.Lock()
+	r.killed.Store(true)
 	close(r.done)
 	r.stopReplicatorsLocked()
 	r.applyCond.Broadcast()
@@ -218,7 +223,13 @@ func (r *Raft) persistentStateLocked() PersistentState {
 	return PersistentState{CurrentTerm: r.currentTerm, VotedFor: r.votedFor, Log: r.entries}
 }
 
+// After Kill, straggling RPC-reply goroutines may still change state; they
+// must not write to a persister that may already be closed or reused.
+
 func (r *Raft) persistLocked() {
+	if r.killed.Load() {
+		return
+	}
 	if err := r.persister.SaveState(r.persistentStateLocked()); err != nil {
 		// Continuing without durable state could violate safety.
 		panic(fmt.Sprintf("raft %d: persist: %v", r.id, err))
@@ -226,6 +237,9 @@ func (r *Raft) persistLocked() {
 }
 
 func (r *Raft) persistWithSnapshotLocked() {
+	if r.killed.Load() {
+		return
+	}
 	if err := r.persister.SaveStateAndSnapshot(r.persistentStateLocked(), r.snapshot); err != nil {
 		panic(fmt.Sprintf("raft %d: persist snapshot: %v", r.id, err))
 	}
